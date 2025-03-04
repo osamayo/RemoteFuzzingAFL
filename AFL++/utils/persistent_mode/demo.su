@@ -1,0 +1,2 @@
+persistent_demo_new.c:56:main	60	static
+persistent_demo_new.c:sancov.module_ctor_trace_pc_guard	28	static
