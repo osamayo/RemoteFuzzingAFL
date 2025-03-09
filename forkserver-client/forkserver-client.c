@@ -167,14 +167,16 @@ int main(int argc, char** argv) {
                 USAGE();
         }
     }
+
+    if (port < 1 || ip == NULL || FuzzingInstancesCount == 0) {
+        USAGE();
+    }
+
     printf("ip: %s\n", ip);
     printf("port: %d\n", port);
     printf("Fuzzing Instances: %d\n", FuzzingInstancesCount);
     testcasesBufferLen = FuzzingInstancesCount;
 
-    if (port < 1 || ip == NULL || FuzzingInstancesCount == 0) {
-        USAGE();
-    }
 
     if (getenv("AFL_DEGUG")) debug = true;
 
@@ -470,7 +472,7 @@ void setup_target_args(char **argv, u8 *prog_in, bool *use_stdin) {
 
 void USAGE()
 {
-    perror("Usage: client -c <AFL server ip> -p <AFL server port> -N <Number of Fuzzing Instances> -- /path/to/fuzzed_app [ ... ]\n");
+    perror("Usage: forkserver-client -c <LISTEN-IP> -p <LISTEN-PORT> -N <Number of Fuzzing Instances> -- /path/to/fuzzed_app [ ... ]\n");
     exit(1);
 }
 

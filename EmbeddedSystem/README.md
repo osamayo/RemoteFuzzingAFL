@@ -38,7 +38,7 @@ extern UART_HandleTypeDef huart2;
 ## Modifications to `main.c`
 
 ### Define `targetfunc`
-Modify `main.c` to declare `targetfunc` and implement the function you want to fuzz:
+Modify `main.c` to declare `targetfunc` and implement the function you want to fuzz, you should use `__afl_fuzz_ptr` and `__afl_fuzz_len` to recieve testcase data and length as below:
 
 ```c
 void targetfunc()
@@ -60,7 +60,7 @@ void targetfunc()
 ```
 
 ### Modify `main()`
-In the `main()` function, initialize the UART interface and start fuzzing `targetfunc`:
+In the `main()` function, initialize the UART interface and start fuzzing `targetfunc` by calling `__afl_manual_init()` and then `__afl_persistent_loop`:
 
 ```c
 int main(void)
