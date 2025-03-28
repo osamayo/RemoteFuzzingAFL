@@ -9,7 +9,6 @@
 #include <string.h>
 #include "afl-remotefuzzing.h"
 #include "stdbool.h"
-#include "rs232.h"
 
 // Buffer
 uint8_t FuzzingInstancesCount;
@@ -21,105 +20,76 @@ u32 bitmap_size;
 
 bool debug;
 
-int boardSock=0;
+int uart_fd=0;
 
-u32 MAX_LENGTH=2050;
-int cport_nr=16;       /* /dev/ttyUSB0  */
-int bdrate=115200;     /* 9600 baud */
+u32 MAX_LENGTH=1000;
 char padding[1000] = {0}; // TODO: use halfSize
 
 bool Serial=true;
-void SerialInit()
-{
-    if (!Serial)
-    {
-        ServerInfo info = {0};
-        info.ip = "127.0.0.1";
-        info.port = 4444;
-        
-        boardSock = connect_server(&info);
-        if (boardSock==-1)
-        {
-        puts("Failed to connect to board!");
-        exit(EXIT_FAILURE);
-        }
-    } else 
-    {
-        char mode[]={'8','N','1',0};
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <termios.h>
 
-        if(RS232_OpenComport(cport_nr, bdrate, mode, 0))
-        {
-        printf("Can not open comport\n");
-        exit(EXIT_FAILURE);
-        }
-        puts("Connected!");
-      
+int setup_uart(const char* device, int baudrate) {
+    int fd = open(device, O_RDWR | O_NOCTTY | O_NDELAY);
+    if (fd == -1) {
+        perror("Error opening UART");
+        return -1;
     }
-       
 
-  
+    struct termios options;
+    tcgetattr(fd, &options);
+
+    cfsetispeed(&options, baudrate);
+    cfsetospeed(&options, baudrate);
+
+    options.c_cflag = CS8 | CLOCAL | CREAD;  // 8N1, No parity
+    options.c_iflag = IGNPAR;
+    options.c_oflag = 0;
+    options.c_lflag = 0;
+
+    tcflush(fd, TCIFLUSH);
+    tcsetattr(fd, TCSANOW, &options);
+
+    return fd;
 }
 
-size_t SerialWrite(u8* buffer, u32 len)
-{
-    if (!Serial)
-        return send_buffer(boardSock, buffer, len);
-    else
-    {
-        int bytes_sent = 0;
-        while (len > 0)
-        {
-            bytes_sent = RS232_SendBuf(cport_nr, buffer, len);
-            if (bytes_sent == -1)
-            {
-                printf("Error: %d %d\n", len, bytes_sent);
-                return -1;
-            }
+void serial_send(int fd, uint8_t* data, int len) {
+    write(fd, data, len);
+}
 
-            buffer += bytes_sent;
-            len -= bytes_sent;
+int serial_receive(int fd, uint8_t* buffer, int len) {
+    int ret;
+    int recievedLen=0;
+
+    while (recievedLen < len && (ret = read(fd, buffer+recievedLen, len-recievedLen)) >= 0) // 
+        recievedLen += ret;
+
+    return recievedLen;
+    // return read(fd, buffer, len);
+}
+
+/*
+
+int send_buffer(int sock, u8* buffer, u32 len)
+{
+    int bytes_sent = 0;
+    while (len > 0)
+    {
+        bytes_sent = send(sock, buffer, len, 0);
+        if (bytes_sent == -1)
+        {
+            printf("Error: %d %d %d\n", sock, len, bytes_sent);
+            return -1;
         }
-        return bytes_sent;
 
+        buffer += bytes_sent;
+        len -= bytes_sent;
     }
-    //    return RS232_SendBuf(cport_nr, buffer, len);
-
+    return bytes_sent;
 }
-
-size_t SerialRead(u8* OutBuffer, u32 len)
-{
-    if (!Serial)
-        return recieve_buffer(boardSock, OutBuffer, len);
-    else 
-    {
-        int ret=0;
-        int recievedLen=0;
-
-        time_t t0 = time(0);
-        while (recievedLen < len && (ret = RS232_PollComport(cport_nr, OutBuffer + recievedLen, len - recievedLen))>=0 ) // TODO: Improve >0
-        {
-            if (ret == 0)
-            {
-                time_t t1 = time(0);
-                double diff = difftime(t1, t0);
-                if ((int)diff > 5) // Wait 5 seconds
-                {
-                    printf("Recieved: %d | len: %d | ret: %d\n", recievedLen, len, ret);
-                    return recievedLen;
-                }
-
-            } else 
-            {
-                recievedLen += ret;
-
-            }
-        }    
-
-        return recievedLen;
-    }
-        // return RS232_PollComport(cport_nr, OutBuffer, len);
-
-}
+*/
 
 
 void USAGE()
@@ -187,12 +157,17 @@ int main(int argc, char** argv) {
 
     // connecting to board
     puts("Connecting to board");
-    SerialInit();
+    int uart_fd = setup_uart("/dev/ttyUSB0", B115200); // B921600
+    if (uart_fd < 0) 
+    {
+        puts("Failed to connect to board");
+        exit(EXIT_FAILURE);
+    }
     puts("Successfully connected to board");
 
     puts("Sending number of instances");
-    SerialWrite(&FuzzingInstancesCount, 1);
-
+    // SerialWrite(&FuzzingInstancesCount, 1);
+    serial_send(uart_fd, &FuzzingInstancesCount, 1);
 
     size_t FeedbackStructLen = sizeof(FuzzingFeedback);
     FuzzingFeedback signalFeedback = {0};
@@ -201,7 +176,8 @@ int main(int argc, char** argv) {
 
     puts("Waiting for device signal packet");
     int ret=0;
-    ret = SerialRead((u8*)&signalFeedback, FeedbackStructLen);
+    // ret = SerialRead((u8*)&signalFeedback, FeedbackStructLen);
+    ret = serial_receive(uart_fd, (u8*)&signalFeedback, FeedbackStructLen);
 
     printf("SerialRead: %d\n", ret);
     assert(ret == FeedbackStructLen);
@@ -274,25 +250,26 @@ int main(int argc, char** argv) {
                 
                 testcase.instance_id = (u8)i;
                 puts("Sending testcase header");
-                packetLen=SerialWrite((u8*)&testcase, testcaseStructLen);
-                if (packetLen != testcaseStructLen)
-                {
-                    printf("Device is disconnected1\n");
-                    exit(EXIT_FAILURE);
-                }
+                // packetLen=SerialWrite((u8*)&testcase, testcaseStructLen);
+                serial_send(uart_fd, (u8*) &testcase, testcaseStructLen);
+
+                
                 totalSent+=testcaseStructLen;
                 puts("header sent");
 
                 if (testcase.sync && testcase.update_virgin_bits)
                 {
                     // sending padding bytes
-                    SerialWrite(padding, halfSize - testcaseStructLen);
+                    // SerialWrite(padding, halfSize - testcaseStructLen);
+                    serial_send(uart_fd, padding, halfSize - testcaseStructLen);
+
                     totalSent+= (halfSize-testcaseStructLen);
                     // send virgin_bits maps
                     puts("Receiving virgin_bit map from device");
                     FuzzingFeedback update_res = {0};
                     size_t s = sizeof(FuzzingFeedback);
-                    packetLen=SerialRead((u8*)&update_res, s);
+                    // packetLen=SerialRead((u8*)&update_res, s);
+                    packetLen = serial_receive(uart_fd, (u8*) &update_res, s);
                     if (packetLen != s)
                     {
                         printf("Device is disconnected2\n");
@@ -301,17 +278,19 @@ int main(int argc, char** argv) {
 
                     u32 mapsize= htonl(update_res.mapsize);
 
-                    packetLen=SerialRead(bitmapBuffer, mapsize);
+                    // packetLen=SerialRead(bitmapBuffer, mapsize);
+                    packetLen = serial_receive(uart_fd, bitmapBuffer, mapsize);
+
                     if (packetLen != mapsize)
                     {
+                        /* 
                         char msg[100] = {0};
                         sleep(5);
                         SerialRead(msg, 100);
                         printf("msg: %s", msg);
+                        */
                         printf("Device is disconnected3\n");
                         exit(EXIT_FAILURE);
-
-                        
                     }
 
                     int sent = send_buffer(*(clients+i), (u8*)&update_res, s);
@@ -341,13 +320,10 @@ int main(int argc, char** argv) {
                     {
                         padding = halfSize - (len % halfSize);
                     }
-                    packetLen=SerialWrite(bitmapBuffer, lentmp+padding);
+                    // packetLen=SerialWrite(bitmapBuffer, lentmp+padding);
+                    serial_send(uart_fd, bitmapBuffer, lentmp+padding);
                     totalSent+=lentmp+padding;
-                    if (packetLen != lentmp+padding)
-                    {
-                        printf("Device is disconnected4\n");
-                        exit(EXIT_FAILURE);
-                    }
+                    
                     printf("Total Sent: %d\n", totalSent);
                     totalSent=0;
 
@@ -381,13 +357,12 @@ int main(int argc, char** argv) {
                     }
                     // memset(testcaseBuffer+lentmp, 0, padding); //TODO: Restore
                     printf("Sending testcase body %d with padding %d\n", len, padding);
-                    packetLen = SerialWrite(testcaseBuffer, lentmp+padding);
+                    // packetLen = SerialWrite(testcaseBuffer, lentmp+padding);
+                    serial_send(uart_fd, testcaseBuffer, lentmp+padding);
+
                     totalSent+=lentmp+padding;
-                    if (packetLen != lentmp+padding)
-                    {
-                        printf("Device is disconnected5\n");
-                        exit(EXIT_FAILURE);
-                    }
+                    
+                    
                     printf("Total Sent: %d\n", totalSent);
                     totalSent=0;
                     puts("testcase sent");
@@ -398,7 +373,8 @@ int main(int argc, char** argv) {
                     size_t s = sizeof(FuzzingFeedback);
                     
                     puts("Recieving feedback");
-                    packetLen=SerialRead((u8*)&feedback, s);
+                    // packetLen=SerialRead((u8*)&feedback, s);
+                    packetLen = serial_receive(uart_fd, (u8*)&feedback, s);
                     clock_gettime(CLOCK_MONOTONIC, &tend);
 
                     // uint32_t boardt0 = ntohl(feedback.total_execs_lower);
@@ -434,8 +410,8 @@ int main(int argc, char** argv) {
                     if (!analyze_feedback)
                     {
                         printf("recieving bitmap: %d\n", mapsize);
-                        packetLen=SerialRead(bitmapBuffer, mapsize);
-                        
+                        // packetLen=SerialRead(bitmapBuffer, mapsize);
+                        packetLen = serial_receive(uart_fd, bitmapBuffer, mapsize);
                         // if (packetLen != mapsize) // ignore bitmap length check
                         // {
                         //     printf("Device is disconnected7\n");
